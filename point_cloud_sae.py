@@ -16,11 +16,12 @@ class SAETemplate(torch.nn.Module, ABC):
     abstract base class that defines the SAE contract
     '''
 
-    def __init__(self, anchor_points:torch.tensor, num_features:int, cloud_scale_factor=1):
+    def __init__(self, anchor_points:torch.tensor, num_features:int, decoder_initialization_scale: float, cloud_scale_factor=1):
         super().__init__()
         self.anchor_points=anchor_points
         self.num_features=num_features
         self.cloud_scale_factor=cloud_scale_factor
+        self.encoder, self.encoder_bias, self.decoder, self.decoder_bias=self.create_linear_encoder_decoder(decoder_initialization_scale)
         self.num_data_trained_on=0
 
     def catenate_outputs_on_dataset(self, dataset:PointCloudDataset, batch_size=8, include_loss=False):
@@ -54,12 +55,14 @@ class SAETemplate(torch.nn.Module, ABC):
         sparsity_per_entry=active_features.sum()/hidden_layers[..., 0].numel()
         return sparsity_per_entry
 
-    def count_dead_features(self, hidden_layers):
-        active_features=hidden_layers>0
-        dead_features=torch.all(torch.flatten(active_features, end_dim=-2), dim=0)
-        num_dead_features=dead_features.sum()
-        return num_dead_features
-
+    def find_dead_features(self, hidden_layers, eps=1e-6):
+        active_features=hidden_layers>eps
+        dead_features=torch.all(torch.flatten(~ active_features, end_dim=-2), dim=0)
+        return dead_features
+    
+    def count_dead_features(self, hidden_layers, eps=1e-6):
+        dead_features=self.find_dead_features(hidden_layers, eps=eps)
+        return dead_features.sum()
 
     def print_evaluation(self, train_loss, eval_dataset:PointCloudDataset, step_number="N/A"):
         losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(eval_dataset, include_loss=True)
@@ -73,7 +76,7 @@ class SAETemplate(torch.nn.Module, ABC):
         embedded_points=embed_point_cloud(point_batch, anchors=self.anchor_points, scale_factor=self.cloud_scale_factor)
         return self.forward(embedded_points, compute_loss=compute_loss)
 
-    def train_sae(self, train_dataset:PointCloudDataset, eval_dataset:PointCloudDataset, batch_size=64, num_epochs=1, report_every_n_data=500, learning_rate=1e-3, fixed_seed=1337):
+    def train_sae(self, train_dataset:PointCloudDataset, eval_dataset:PointCloudDataset, batch_size=64, num_epochs=1, report_every_n_data=500, reinitialize_every_n_data=500, learning_rate=1e-3, fixed_seed=1337):
         '''
         performs a training loop on self, with printed evaluations
         '''
@@ -84,6 +87,7 @@ class SAETemplate(torch.nn.Module, ABC):
         optimizer=torch.optim.AdamW(self.parameters(), lr=learning_rate)
         step=0
         report_on_batch_number=report_every_n_data//batch_size
+        reinitialize_on_batch_number=reinitialize_every_n_data//batch_size
 
         self.training_prep(train_dataset=train_dataset, eval_dataset=eval_dataset, batch_size=batch_size, num_epochs=num_epochs)
 
@@ -103,8 +107,9 @@ class SAETemplate(torch.nn.Module, ABC):
 
                 if step % report_on_batch_number==0:
                     self.print_evaluation(loss, eval_dataset, step_number=step)
-
-                self.after_step_update(hidden_layer=hidden_layer, step=step)
+                # if step % reinitialize_on_batch_number==0:
+                #     self.check_for_and_reinitialize_dead_feature(train_dataset)
+                self.after_step_update(train_dataset)
         else:
             self.print_evaluation(train_loss=loss, eval_dataset=eval_dataset, step_number="Omega")
         self.eval()
@@ -131,23 +136,60 @@ class SAETemplate(torch.nn.Module, ABC):
         '''
         return
     
-    def after_step_update(self, hidden_layer=None, step=None):
+    def after_step_update(self, train_dataset, hidden_layer=None, step=None):
         '''
         for anything additional that needs to be done after each training step
         '''
-        return
+        losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(train_dataset, include_loss=True)
+        dead_features=self.find_dead_features(hidden_layers)
+        if torch.any(dead_features):
+            self.do_ghost_grads(dead_features, residual_streams, hidden_layer, reconstructed_residual_streams)
+
+    def do_ghost_grads(self,dead_features,residual_streams, hidden_layer, reconstructed_residual_streams):
+        learning_rate=1e-4
+        errors=residual_streams-reconstructed_residual_streams
+        error_magnitudes=errors.norm(dim=-1)**2
+        mean_error_magnitude=error_magnitudes.mean()
+        error_weighted_activation_direction=((residual_streams*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
+        error_weighted_error_direction=((errors*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
+        with torch.no_grad():
+            self.encoder[:,dead_features]+=mean_error_magnitude*learning_rate*error_weighted_activation_direction.unsqueeze(1)
+            self.decoder[dead_features,:]+=mean_error_magnitude*learning_rate*error_weighted_error_direction.unsqueeze(0)
+        
 
     def reconstruction_error(self, residual_stream, reconstructed_residual_stream):
         reconstruction_l2=torch.norm(reconstructed_residual_stream-residual_stream, dim=-1)
         reconstruction_loss=(reconstruction_l2**2).mean()
         return reconstruction_loss
+    
+    def check_for_and_reinitialize_dead_feature(self, train_dataset):
+        losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(train_dataset, include_loss=True)
+        dead_features=self.find_dead_features(hidden_layers)
+        if torch.any(dead_features):
+            errors=(residual_streams-reconstructed_residual_streams).norm(dim=0)
+            one_dead_feature_index=int(torch.where(dead_features)[0][0])
+            print(f"Found that feature {one_dead_feature_index} is dead! Reinitializing!")
+            self.smart_reinitialize_feature(one_dead_feature_index, residual_streams, hidden_layers, errors)
+
+
+    def smart_reinitialize_feature(self, feature_number, residual_streams, hidden_layers, errors):
+        ''' 
+            reinitializes the given feature so that it activates on the average error in test_dataset
+        '''
+        return
+        errors=errors/errors.norm()
+        with torch.no_grad():
+            self.encoder[:,feature_number]=0
+            self.encoder_bias[feature_number]=1
+            self.decoder[feature_number,:]=errors
+            self.decoder_bias[feature_number]=0
+            
 
 class SAEAnthropic(SAETemplate):
 
     def __init__(self, anchor_points:torch.tensor, num_features:int, l1_sparsity_coefficient:float, decoder_initialization_scale=0.1, cloud_scale_factor=1):
-        super().__init__(anchor_points=anchor_points, num_features=num_features, cloud_scale_factor=cloud_scale_factor)
+        super().__init__(anchor_points=anchor_points, num_features=num_features, decoder_initialization_scale=decoder_initialization_scale, cloud_scale_factor=cloud_scale_factor)
         self.l1_sparsity_coefficient=l1_sparsity_coefficient
-        self.encoder, self.encoder_bias, self.decoder, self.decoder_bias=self.create_linear_encoder_decoder(decoder_initialization_scale)
 
     def forward(self, embedded_points, compute_loss=False):
         hidden_layer=self.activation_function(embedded_points @ self.encoder + self.encoder_bias)
@@ -179,12 +221,11 @@ class SAEAnthropic(SAETemplate):
 #suppression_mode can be "relative" or "absolute"
 class LeakyTopkSAE(SAETemplate):
     def __init__(self, anchor_points:torch.tensor, num_features: int, leakiness: float, k:int, suppression_mode="relative", decoder_initialization_scale=0.1, use_relu=True, l1_sparsity_coefficient=0, cloud_scale_factor=1):
-        super().__init__(anchor_points=anchor_points, num_features=num_features, cloud_scale_factor=cloud_scale_factor)
+        super().__init__(anchor_points=anchor_points, num_features=num_features, decoder_initialization_scale=decoder_initialization_scale, cloud_scale_factor=cloud_scale_factor)
         self.leakiness = leakiness
         self.k=k
         self.suppression_mode = suppression_mode
         self.use_relu=use_relu
-        self.encoder, self.encoder_bias, self.decoder, self.decoder_bias=self.create_linear_encoder_decoder(decoder_initialization_scale)
         self.l1_sparsity_coefficient=l1_sparsity_coefficient
 
 
@@ -241,81 +282,6 @@ class TopkSAE(LeakyTopkSAE):
                         l1_sparsity_coefficient=l1_sparsity_coefficient,
                         cloud_scale_factor=cloud_scale_factor)
 
-
-def graph_point_cloud_results_unified(eval_dataset, save_name=None, anchors=None, file_location="trained_saes/point_cloud_sae.pkl", detail_level=3, activation_cutoff=1e-1, anchor_details='encoder'):
-    sae=torch.load(file_location)
-    number_of_features=sae.num_features
-    num_subplots_horizontal=ceil(sqrt(number_of_features))
-    num_subplots_vertical=ceil(number_of_features/num_subplots_horizontal)
-
-    for i in range(number_of_features):
-        ax=plt.subplot(num_subplots_vertical, num_subplots_horizontal, i+1)
-        graph_one_feature(sae, i, eval_dataset, axes=ax, anchors=anchors, detail_level=detail_level, activation_cutoff=activation_cutoff, anchor_details=anchor_details)
-    plt.tight_layout()
-    save_directory="analysis_results/point_cloud_results"
-    if not os.path.exists(save_directory):
-        os.makedirs(save_directory)
-    if not save_name:
-        save_name="all_features"
-    save_file_name=f"{save_directory}/{save_name}_detail_{detail_level}.png"
-    plt.title(f"All feature activations\nwith {anchor_details} weights shown")
-    plt.savefig(save_file_name)
-    plt.close()
-
-def graph_one_feature(sae, feature_number, eval_dataset, axes, anchors=None, detail_level=3, activation_cutoff=1e-1, anchor_details='encoder'):
-    x=eval_dataset.points[:,0].detach().numpy()
-    y=eval_dataset.points[:,1].detach().numpy()
-    residual_streams, hidden_layers, reconstructed_residual_streams=sae.catenate_outputs_on_dataset(eval_dataset, include_loss=False)
-    hidden_layers=hidden_layers.detach().numpy()
-    this_hidden_layers=hidden_layers[:,feature_number]
-    this_hidden_layers_masked=this_hidden_layers*(this_hidden_layers>activation_cutoff)
-    if detail_level==0:
-        colors='blue'
-        sizes=12
-    else:
-        colors=this_hidden_layers_masked
-        sizes=18* (this_hidden_layers_masked>0)+6
-    point_cloud_scatter=axes.scatter(x,y, c=colors, s=sizes, label="Point activations")
-    axes.set_title(f"Activations of feature {feature_number}")
-    if anchors != None:
-        anchor_x=anchors[:,0].detach().numpy()
-        anchor_y=anchors[:,1].detach().numpy()
-        if detail_level==2:
-            anchors_scatter= axes.scatter(anchor_x, anchor_y, c='r', marker='^')
-        elif detail_level==3:
-            if anchor_details=="encoder":
-                anchor_weights=sae.encoder[:,feature_number]
-            elif anchor_details=="decoder":
-                anchor_weights=sae.decoder[feature_number]
-            colors=anchor_weights.detach().numpy()
-            sizes=torch.abs(anchor_weights).detach().numpy()
-            eps=1e-6
-            sizes=sizes/(sizes.max()+eps)*50 + 6
-            anchors_scatter= axes.scatter(anchor_x, anchor_y, c=colors, marker='^', s=sizes, cmap='seismic', linewidths=0.5, edgecolors='black', label="Anchor influence on feature")
-    return point_cloud_scatter, anchors_scatter
-
-def graph_point_cloud_results(eval_dataset, anchors=None, file_location="trained_saes/point_cloud_sae.pkl", detail_level=3, activation_cutoff=1e-1):
-    '''
-    by detail level:
-    0 - just the points
-    1 - points with feature activations
-    2 - also anchor locations
-    3 - also anchor directions
-    '''
-    sae=torch.load(file_location)
-    save_directory="analysis_results/point_cloud_results"
-    if not os.path.exists(save_directory):
-        os.makedirs(save_directory)
-    for feature_number in range(sae.num_features):
-        fig, ax=plt.subplots()
-        point_cloud_scatter, anchors_scatter=graph_one_feature(sae, feature_number, eval_dataset, axes=ax, anchors=anchors, detail_level=detail_level, activation_cutoff=activation_cutoff)
-        plt.colorbar(point_cloud_scatter)
-        plt.legend()
-        if detail_level==3:
-            plt.colorbar(anchors_scatter)
-        save_file_name=f"{save_directory}/feature_{feature_number}_detail_{detail_level}.png"
-        plt.savefig(save_file_name)
-        plt.close()
 
 def suppress_lower_activations(t, bound, leakiness, inclusive=True, mode="absolute"):
     if torch.is_tensor(bound) and bound.numel() != 1:
