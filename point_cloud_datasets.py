@@ -12,13 +12,13 @@ class PointCloudDataset(Dataset):
     def __getitem__(self, index):
         return self.points[index]
 
-def generate_point_cloud_blobs(num_points, seed=0, class_weights=[1,1,1]):
+def generate_point_cloud_blobs(num_points, seed=0, class_weights=[1,1,1,1]):
     '''
     generates a (num_points, 2) shaped tensor of points ~evenly split between the group means
     '''
     if seed:
         torch.random.manual_seed(seed)
-    centers=torch.tensor([[0,0], [5,0], [0,5]], dtype=torch.float32)
+    centers=torch.tensor([[0,0], [20,0], [0,20], [20,20], [10,15]], dtype=torch.float32)
     total_class_weights=sum(class_weights)
     num_points_per_class=[num_points*class_weight//total_class_weights for class_weight in class_weights]
     num_points_per_class[0]+=num_points-sum(num_points_per_class)
