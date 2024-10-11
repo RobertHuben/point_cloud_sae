@@ -66,14 +66,7 @@ class SAETemplate(torch.nn.Module, ABC):
 
     def compute_classification_entropy(self, hidden_layers:torch.tensor,  eval_dataset:PointCloudDataset):
         cluster_assignments=hidden_layers.argmax(dim=1)
-        ground_truth=eval_dataset.true_classes
-        cluster_assignments_one_hot= (cluster_assignments.unsqueeze(1)==torch.arange(self.num_features).unsqueeze(0)).int()
-        ground_truth_one_hot= (ground_truth.unsqueeze(1)==torch.arange(eval_dataset.num_classes).unsqueeze(0)).int()
-        cluster_counts=cluster_assignments_one_hot.sum(dim=0)
-        combined_class_truths=cluster_assignments_one_hot.T @ ground_truth_one_hot
-        entropies=torch.tensor([entropy_from_counts(row) for row in combined_class_truths])
-        weighted_entropy=(entropies*cluster_counts).sum()/(cluster_counts.sum())
-        return weighted_entropy
+        return eval_dataset.compute_entropy_of_clustering(cluster_assignments)
 
     def print_evaluation(self, train_loss, eval_dataset:PointCloudDataset, step_number="N/A"):
         losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(eval_dataset, include_loss=True)

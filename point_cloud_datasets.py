@@ -1,8 +1,9 @@
 import torch
-from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
+from utils import entropy_from_counts
+from math import sqrt, ceil
 
-class PointCloudDataset(Dataset):
+class PointCloudDataset(torch.utils.data.Dataset):
 
     def __init__(self, points:torch.tensor, true_classes:torch.tensor):
         self.points=points
@@ -23,6 +24,20 @@ class PointCloudDataset(Dataset):
         plt.legend()
         plt.show()
 
+    def compute_entropy_of_clustering(self, cluster_assignments):
+        '''
+        computes the entropy of a classification attempt. 
+        cluster_ids should be an iterable of length len(self), with integer values in range(self.num_classes)
+        '''
+        num_clusters=len(set(int(x) for x in cluster_assignments))
+        cluster_assignments_one_hot= (cluster_assignments.unsqueeze(1)==torch.arange(num_clusters).unsqueeze(0)).int()
+        ground_truth_one_hot= (self.true_classes.unsqueeze(1)==torch.arange(self.num_classes).unsqueeze(0)).int()
+        cluster_counts=cluster_assignments_one_hot.sum(dim=0)
+        combined_class_truths=cluster_assignments_one_hot.T @ ground_truth_one_hot
+        entropies=torch.tensor([entropy_from_counts(row) for row in combined_class_truths])
+        weighted_entropy=(entropies*cluster_counts).sum()/(cluster_counts.sum())
+        return weighted_entropy
+
 
 def create_blobs_dataset(num_points, stdev=1, seed=0, class_weights=None):
     '''
@@ -31,6 +46,33 @@ def create_blobs_dataset(num_points, stdev=1, seed=0, class_weights=None):
     if seed:
         torch.random.manual_seed(seed)
     centers=torch.tensor([[0,0], [10,0], [0,10], [10,10], [5,7]], dtype=torch.float32)
+    if class_weights==None:
+        class_weights=[1 for _ in centers]
+    total_class_weights=sum(class_weights)
+    num_points_per_class=[num_points*class_weight//total_class_weights for class_weight in class_weights]
+    num_points_per_class[0]+=num_points-sum(num_points_per_class)
+    all_points=[]
+    true_classes=[]
+    class_num=0
+    for num_points_in_this_class, center in zip(num_points_per_class,centers):
+        all_points.append(create_point_blob(num_points_in_this_class, center, stdev=stdev*torch.ones(1,2)))
+        true_classes.append(torch.tensor([class_num for _ in range(num_points_in_this_class)]))
+        class_num+=1
+    blobs_dataset= PointCloudDataset(torch.concat(all_points), torch.concat(true_classes))
+    return blobs_dataset
+
+def create_blob_grid_dataset(num_points, num_blobs=18, stdev=1, seed=0, class_weights=None):
+    '''
+    generates a (num_points, 2) shaped tensor of points ~evenly split between the group means
+    '''
+    if seed:
+        torch.random.manual_seed(seed)
+    blob_side_length=ceil(sqrt(num_blobs))
+    centers=5*torch.stack([
+        torch.arange(blob_side_length).unsqueeze(0)*torch.ones((blob_side_length,1)),
+        torch.arange(blob_side_length).unsqueeze(1)*torch.ones((1,blob_side_length))] 
+        ).flatten(start_dim=1).T
+    centers=centers[:num_blobs]
     if class_weights==None:
         class_weights=[1 for _ in centers]
     total_class_weights=sum(class_weights)
