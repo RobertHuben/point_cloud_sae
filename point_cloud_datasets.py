@@ -7,7 +7,7 @@ class PointCloudDataset(Dataset):
     def __init__(self, points:torch.tensor, true_classes:torch.tensor):
         self.points=points
         self.true_classes=true_classes
-        self.total_class_num=len(set(int(x) for x in true_classes))
+        self.num_classes=len(set(int(x) for x in true_classes))
 
     def __len__(self):
         return len(self.points)
@@ -16,7 +16,7 @@ class PointCloudDataset(Dataset):
         return self.points[index]
 
     def show_as_scatter(self):
-        for class_num in range(self.total_class_num):
+        for class_num in range(self.num_classes):
             x,y=self[torch.where(self.true_classes==class_num)].T
             plt.scatter(x,y, label=f"Class {class_num}")
         plt.title("Points in the dataset, separated by class")

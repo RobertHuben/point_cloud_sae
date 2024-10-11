@@ -1,4 +1,5 @@
 import torch
+from math import log
 
 def compute_pairwise_squared_distances(points:torch.tensor, anchors:torch.tensor):
     '''
@@ -17,3 +18,8 @@ def embed_point_cloud(points:torch.tensor, anchors:torch.tensor, eps=1e-5, scale
     squared_distances=compute_pairwise_squared_distances(points, anchors)
     variance=torch.std(anchors, dim=0).norm()**2
     return torch.exp(-1*scale_factor*squared_distances/(variance+eps))
+
+def entropy_from_counts(counts):
+    total_items=sum(counts)
+    probabilities=[x/total_items for x in counts]
+    return -1*sum([prob*log(prob) for prob in probabilities if prob>0])

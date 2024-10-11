@@ -7,7 +7,7 @@ from math import sqrt, ceil
 from torch.nn import functional as F
 
 from point_cloud_datasets import PointCloudDataset
-from utils import embed_point_cloud
+from utils import embed_point_cloud, entropy_from_counts
 
 device='cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -64,12 +64,24 @@ class SAETemplate(torch.nn.Module, ABC):
         dead_features=self.find_dead_features(hidden_layers, eps=eps)
         return dead_features.sum()
 
+    def compute_classification_entropy(self, hidden_layers:torch.tensor,  eval_dataset:PointCloudDataset):
+        cluster_assignments=hidden_layers.argmax(dim=1)
+        ground_truth=eval_dataset.true_classes
+        cluster_assignments_one_hot= (cluster_assignments.unsqueeze(1)==torch.arange(self.num_features).unsqueeze(0)).int()
+        ground_truth_one_hot= (ground_truth.unsqueeze(1)==torch.arange(eval_dataset.num_classes).unsqueeze(0)).int()
+        ground_truth_counts=ground_truth_one_hot.sum(dim=0)
+        combined_class_truths=cluster_assignments_one_hot.T @ ground_truth_one_hot
+        entropies=torch.tensor([entropy_from_counts(row) for row in combined_class_truths])
+        weighted_entropy=(entropies*ground_truth_counts).sum()/(ground_truth_counts.sum())
+        return weighted_entropy
+
     def print_evaluation(self, train_loss, eval_dataset:PointCloudDataset, step_number="N/A"):
         losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(eval_dataset, include_loss=True)
         test_loss=losses.mean()
         l0_sparsity=self.compute_l0_sparsity(hidden_layers)
         dead_features=self.count_dead_features(hidden_layers)
-        print_message=f"Train loss, test loss, l0 sparsity, dead features after training on {self.num_data_trained_on} datapoints: {train_loss.item():.2f}, {test_loss:.2f}, {l0_sparsity:.1f}, {dead_features:.0f}"
+        entropy=self.compute_classification_entropy(hidden_layers, eval_dataset)
+        print_message=f"Train loss, test loss, l0 sparsity, dead features, entropy after training on {self.num_data_trained_on} datapoints: {train_loss.item():.2f}, {test_loss:.2f}, {l0_sparsity:.1f}, {dead_features:.0f}, {entropy:.2f}"
         tqdm.write(print_message)
         
     def forward_on_points(self, point_batch:torch.tensor, compute_loss=False):
@@ -155,35 +167,13 @@ class SAETemplate(torch.nn.Module, ABC):
         with torch.no_grad():
             self.encoder[:,dead_features]+=mean_error_magnitude*learning_rate*error_weighted_activation_direction.unsqueeze(1)
             self.decoder[dead_features,:]+=mean_error_magnitude*learning_rate*error_weighted_error_direction.unsqueeze(0)
-        
 
     def reconstruction_error(self, residual_stream, reconstructed_residual_stream):
         reconstruction_l2=torch.norm(reconstructed_residual_stream-residual_stream, dim=-1)
         reconstruction_loss=(reconstruction_l2**2).mean()
         return reconstruction_loss
     
-    def check_for_and_reinitialize_dead_feature(self, train_dataset):
-        losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(train_dataset, include_loss=True)
-        dead_features=self.find_dead_features(hidden_layers)
-        if torch.any(dead_features):
-            errors=(residual_streams-reconstructed_residual_streams).norm(dim=0)
-            one_dead_feature_index=int(torch.where(dead_features)[0][0])
-            print(f"Found that feature {one_dead_feature_index} is dead! Reinitializing!")
-            self.smart_reinitialize_feature(one_dead_feature_index, residual_streams, hidden_layers, errors)
 
-
-    def smart_reinitialize_feature(self, feature_number, residual_streams, hidden_layers, errors):
-        ''' 
-            reinitializes the given feature so that it activates on the average error in test_dataset
-        '''
-        return
-        errors=errors/errors.norm()
-        with torch.no_grad():
-            self.encoder[:,feature_number]=0
-            self.encoder_bias[feature_number]=1
-            self.decoder[feature_number,:]=errors
-            self.decoder_bias[feature_number]=0
-            
 
 class SAEAnthropic(SAETemplate):
 
