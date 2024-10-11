@@ -69,10 +69,10 @@ class SAETemplate(torch.nn.Module, ABC):
         ground_truth=eval_dataset.true_classes
         cluster_assignments_one_hot= (cluster_assignments.unsqueeze(1)==torch.arange(self.num_features).unsqueeze(0)).int()
         ground_truth_one_hot= (ground_truth.unsqueeze(1)==torch.arange(eval_dataset.num_classes).unsqueeze(0)).int()
-        ground_truth_counts=ground_truth_one_hot.sum(dim=0)
+        cluster_counts=cluster_assignments_one_hot.sum(dim=0)
         combined_class_truths=cluster_assignments_one_hot.T @ ground_truth_one_hot
         entropies=torch.tensor([entropy_from_counts(row) for row in combined_class_truths])
-        weighted_entropy=(entropies*ground_truth_counts).sum()/(ground_truth_counts.sum())
+        weighted_entropy=(entropies*cluster_counts).sum()/(cluster_counts.sum())
         return weighted_entropy
 
     def print_evaluation(self, train_loss, eval_dataset:PointCloudDataset, step_number="N/A"):
