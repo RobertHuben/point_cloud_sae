@@ -89,7 +89,7 @@ class SAETemplate(torch.nn.Module, ABC):
             torch.manual_seed(fixed_seed)
         self.to(device)
         self.train()
-        optimizer=torch.optim.AdamW(self.parameters(), lr=learning_rate)
+        optimizer=torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=1e-1)
         step=0
         report_on_batch_number=report_every_n_data//batch_size
         reinitialize_on_batch_number=reinitialize_every_n_data//batch_size
@@ -148,17 +148,17 @@ class SAETemplate(torch.nn.Module, ABC):
         losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(train_dataset, include_loss=True)
         dead_features=self.find_dead_features(hidden_layers)
         if torch.any(dead_features):
-            self.do_ghost_grads(dead_features, residual_streams, hidden_layer, reconstructed_residual_streams)
+            self.do_ghost_grads(dead_features, residual_streams, reconstructed_residual_streams)
 
-    def do_ghost_grads(self,dead_features,residual_streams, hidden_layer, reconstructed_residual_streams):
+    def do_ghost_grads(self,dead_features,residual_streams, reconstructed_residual_streams):
         learning_rate=1e-4
         errors=residual_streams-reconstructed_residual_streams
         error_magnitudes=errors.norm(dim=-1)**2
         mean_error_magnitude=error_magnitudes.mean()
-        error_weighted_activation_direction=((residual_streams*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
+        error_weighted_residual_stream=((residual_streams*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
         error_weighted_error_direction=((errors*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
         with torch.no_grad():
-            self.encoder[:,dead_features]+=mean_error_magnitude*learning_rate*error_weighted_activation_direction.unsqueeze(1)
+            self.encoder[:,dead_features]+=mean_error_magnitude*learning_rate*error_weighted_residual_stream.unsqueeze(1)
             self.decoder[dead_features,:]+=mean_error_magnitude*learning_rate*error_weighted_error_direction.unsqueeze(0)
 
     def reconstruction_error(self, residual_stream, reconstructed_residual_stream):
@@ -166,7 +166,13 @@ class SAETemplate(torch.nn.Module, ABC):
         reconstruction_loss=(reconstruction_l2**2).mean()
         return reconstruction_loss
     
-
+    def classify(self, dataset:PointCloudDataset):
+        '''
+            runs the dataset through this model, and returns classes for it based on the feature number
+        '''
+        losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(dataset, include_loss=True)
+        cluster_assignments=hidden_layers.argmax(dim=1)
+        return cluster_assignments
 
 class SAEAnthropic(SAETemplate):
 
