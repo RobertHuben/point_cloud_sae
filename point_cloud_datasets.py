@@ -1,6 +1,6 @@
 import torch
 import matplotlib.pyplot as plt
-from utils import entropy_from_counts
+from utils import entropy_from_counts, compute_pairwise_squared_distances
 from math import sqrt, ceil
 
 class PointCloudDataset(torch.utils.data.Dataset):
@@ -16,13 +16,22 @@ class PointCloudDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         return self.points[index]
 
-    def show_as_scatter(self):
-        for class_num in range(self.num_classes):
-            x,y=self[torch.where(self.true_classes==class_num)].T
-            plt.scatter(x,y, label=f"Class {class_num}")
+    def plot_as_scatter(self, labels=None, save_name=None):
+        if labels==None:
+            labels=self.true_classes
+            label_term="True Class"
+        else:
+            label_term="Cluster"
+        label_set=sorted(list(set(int(x) for x in labels)))
+        for class_num in label_set:
+            x,y=self[torch.where(labels==class_num)].T
+            plt.scatter(x,y, label=f"{label_term} {class_num}")
         plt.title("Points in the dataset, separated by class")
         plt.legend()
-        plt.show()
+        if save_name==None:
+            plt.show()
+        else:
+            plt.savefig(f"analysis_results/{save_name}.png")
 
     def compute_entropy_of_clustering(self, cluster_assignments):
         '''
@@ -120,8 +129,48 @@ def create_lollipops_dataset(num_points, seed=0, class_weights=None):
     lollipops_dataset= PointCloudDataset(torch.concat(all_points), torch.concat(true_classes))
     return lollipops_dataset
 
+def create_random_blobs_dataset(num_points, num_blobs, blobs_seed=0, points_seed=1, class_weights=None):
+    torch.random.manual_seed(blobs_seed)
+    centers_scale_factor=3*torch.sqrt(torch.tensor(num_blobs))
+    
+    centers=torch.tensor([]).reshape((0,2))
+    distance_cutoff=8
+
+    while len(centers)<num_blobs:
+        prospective_center=torch.normal(torch.zeros((1,2)), centers_scale_factor*torch.tensor([1,1]))
+        squared_distance_to_previous_centers=compute_pairwise_squared_distances(prospective_center, centers)
+        if torch.all(squared_distance_to_previous_centers>distance_cutoff**2):
+            centers=torch.concat([centers,prospective_center], dim=0)
+
+    pre_covariances= 3*(torch.rand((num_blobs, 2, 2))-.5)
+    covariances=pre_covariances.transpose(1,2)@pre_covariances+.5*torch.eye(2)
+
+    if class_weights==None:
+        class_weights=[1 for _ in centers]
+    total_class_weights=sum(class_weights)
+    num_points_per_class=[num_points*class_weight//total_class_weights for class_weight in class_weights]
+    num_points_per_class[0]+=num_points-sum(num_points_per_class)
+    all_points=[]
+    true_classes=[]
+    class_num=0
+
+    torch.random.manual_seed(points_seed)
+
+    for num_points_in_this_class, center, covariance in zip(num_points_per_class, centers, covariances):
+        all_points.append(create_skew_point_blob(num_points_in_this_class, center, covariance))
+        true_classes.append(torch.tensor([class_num for _ in range(num_points_in_this_class)]))
+        class_num+=1
+    random_blobs_dataset= PointCloudDataset(torch.concat(all_points), torch.concat(true_classes))
+    return random_blobs_dataset
+
 def create_point_blob(num_points, center, stdev):
     points=torch.normal(mean=center.tile(num_points,1), std=stdev.tile(num_points,1))
+    return points
+
+def create_skew_point_blob(num_points, center, covariance):
+    dist=torch.distributions.multivariate_normal.MultivariateNormal(center, covariance_matrix=covariance.float())
+    points=dist.sample((num_points,))
+    # points=torch.normal(mean=center.tile(num_points,1), std=stdev.tile(num_points,1))
     return points
 
 def create_point_cloud_rectangle(num_points, dims):
