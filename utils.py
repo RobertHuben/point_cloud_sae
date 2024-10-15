@@ -12,8 +12,8 @@ def compute_pairwise_squared_distances(points:torch.tensor, anchors:torch.tensor
 def embed_point_cloud(points:torch.tensor, anchors:torch.tensor, eps=1e-5, scale_factor=1):
     '''
     embeds (N,D) tensor of points as (M,N) tensor, based on (M,D) tensor of anchor points
-    the (i,j)th entry of the (M,N) tensor is exp(-2*d^2/sigma) where d is the distance from the ith point to the jth anchor
-    and sigma is the variance of all such distances
+    the (i,j)th entry of the (M,N) tensor is exp(-scale_factor*d^2/variance) where d is the distance from the ith point to the jth anchor
+    and variance is the variance of all such distances
     '''
     squared_distances=compute_pairwise_squared_distances(points, anchors)
     variance=torch.std(anchors, dim=0).norm()**2

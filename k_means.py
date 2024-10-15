@@ -38,12 +38,9 @@ def assign_to_nearest_nieghbor(point_cloud:PointCloudDataset, centroids):
     return torch.min(distances, dim=1).indices
 
 def k_nearest_demo(mode, num_classes, point_cloud_size, plot_results=True, seed=1):
-    '''
-    seed 1 fails, seed 2 works
-    '''
-    files_to_delete = glob.glob("analysis_results/k_nearest_neighbors_after_step*")
+    files_to_delete = glob.glob("k_nearest_neighbors_after_step*")
     for file_path in files_to_delete:
-        os.remove(file_path)
+            os.remove(file_path)
             
     # point_cloud=create_blobs_dataset(point_cloud_size, seed=seed)
     _, point_cloud, __=generate_datasets_for_saes(mode, 1, point_cloud_size, 1, num_classes, class_weights_seed=None, points_seeds=[0,seed,0])
