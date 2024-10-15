@@ -2,6 +2,7 @@ import torch
 import matplotlib.pyplot as plt
 from utils import entropy_from_counts, compute_pairwise_squared_distances
 from math import sqrt, ceil
+import random
 
 class PointCloudDataset(torch.utils.data.Dataset):
 
@@ -179,3 +180,32 @@ def create_point_cloud_rectangle(num_points, dims):
     shifts=torch.tensor([[left_x, bottom_y]])
     points=(torch.rand((num_points, 2))*stretch_factors)+shifts
     return points
+
+
+def generate_datasets_for_saes(mode:str, num_anchors:int, train_size:int, test_size:int, num_classes:int, class_weights=None, class_weights_seed=0, points_seeds=[1,2,3], other_random_seed=10):
+
+    if class_weights_seed:
+        class_weights_seed=1
+        random.seed(class_weights_seed)
+        class_weights=[random.choice([1,2,3,4]) for _ in range(num_classes)]
+        print(f"Randomized class weights are: {class_weights}")
+    else:
+        class_weights=None
+
+    if mode=='basic_blobs':
+        anchors=create_blobs_dataset(num_anchors, seed=points_seeds[0], class_weights=class_weights).points
+        train_dataset=create_blobs_dataset(train_size, seed=points_seeds[1], class_weights=class_weights)
+        test_dataset=create_blobs_dataset(test_size, seed=points_seeds[2], class_weights=class_weights)
+    elif mode=='lollipops':
+        anchors=create_lollipops_dataset(num_anchors, seed=points_seeds[0], class_weights=class_weights).points
+        train_dataset=create_lollipops_dataset(train_size, seed=points_seeds[1], class_weights=class_weights)
+        test_dataset=create_lollipops_dataset(test_size, seed=points_seeds[2], class_weights=class_weights)
+    elif mode=='blob_grid':
+        anchors=create_blob_grid_dataset(num_anchors, seed=points_seeds[0], class_weights=class_weights).points
+        train_dataset=create_blob_grid_dataset(train_size, seed=points_seeds[1], class_weights=class_weights)
+        test_dataset=create_blob_grid_dataset(test_size, seed=points_seeds[2], class_weights=class_weights)
+    elif mode=='random_blobs':
+        anchors=create_random_blobs_dataset(num_anchors, num_blobs=num_classes, blobs_seed=other_random_seed, points_seed=points_seeds[0], class_weights=class_weights).points
+        train_dataset=create_random_blobs_dataset(train_size, num_blobs=num_classes, blobs_seed=other_random_seed, points_seed=points_seeds[1], class_weights=class_weights)
+        test_dataset=create_random_blobs_dataset(test_size, num_blobs=num_classes, blobs_seed=other_random_seed, points_seed=points_seeds[2], class_weights=class_weights)
+    return anchors, train_dataset, test_dataset
