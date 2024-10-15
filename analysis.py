@@ -82,7 +82,7 @@ def graph_one_feature(sae, feature_number, eval_dataset, axes, anchors=None, det
         anchors_scatter=None
     return point_cloud_scatter, anchors_scatter
 
-def graph_point_cloud_results(eval_dataset, anchors=None, file_location="trained_saes/point_cloud_sae.pkl", detail_level=3, activation_cutoff=1e-1):
+def graph_point_cloud_results(eval_dataset, anchors=None, anchor_details='encoder', file_location="trained_saes/point_cloud_sae.pkl", detail_level=3, activation_cutoff=1e-1):
     '''
     by detail level:
     0 - just the points
@@ -96,12 +96,12 @@ def graph_point_cloud_results(eval_dataset, anchors=None, file_location="trained
         os.makedirs(save_directory)
     for feature_number in range(sae.num_features):
         fig, ax=plt.subplots()
-        point_cloud_scatter, anchors_scatter=graph_one_feature(sae, feature_number, eval_dataset, axes=ax, anchors=anchors, detail_level=detail_level, activation_cutoff=activation_cutoff)
+        point_cloud_scatter, anchors_scatter=graph_one_feature(sae, feature_number, eval_dataset, axes=ax, anchors=anchors, detail_level=detail_level, activation_cutoff=activation_cutoff, anchor_details=anchor_details)
         plt.colorbar(point_cloud_scatter)
         plt.legend()
         if detail_level==3 and anchors_scatter:
             plt.colorbar(anchors_scatter)
-        save_file_name=f"{save_directory}/feature_{feature_number}_detail_{detail_level}.png"
+        save_file_name=f"{save_directory}/{anchor_details}_feature_{feature_number}_detail_{detail_level}.png"
         plt.tight_layout()
         plt.savefig(save_file_name)
         plt.close()
