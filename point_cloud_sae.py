@@ -16,7 +16,13 @@ class SAETemplate(torch.nn.Module, ABC):
     abstract base class that defines the SAE contract
     '''
 
-    def __init__(self, anchor_points:torch.tensor, num_features:int, decoder_initialization_scale: float, cloud_scale_factor=1, ghost_loss_style="new"):
+    def __init__(self, anchor_points:torch.tensor, 
+                    num_features:int, 
+                    decoder_initialization_scale: float,
+                    cloud_scale_factor:float=1, 
+                    l1_sparsity_coefficient:float=0,
+                    ghost_loss_coefficient:float=1,
+                    ghost_loss_style="new"):
         super().__init__()
         self.anchor_points=anchor_points
         self.num_features=num_features
@@ -24,7 +30,10 @@ class SAETemplate(torch.nn.Module, ABC):
         self.encoder, self.encoder_bias, self.decoder, self.decoder_bias=self.create_linear_encoder_decoder(decoder_initialization_scale)
         self.num_data_trained_on=0
         self.ghost_loss_style=ghost_loss_style
-        self.num_data_since_last_activation=torch.zeros((num_features))
+        self.num_data_since_last_activation=torch.zeros((num_features)) #used for ghost grads
+        self.l1_sparsity_coefficient=l1_sparsity_coefficient
+        self.ghost_loss_coefficient=ghost_loss_coefficient
+
 
     def catenate_outputs_on_dataset(self, dataset:PointCloudDataset, batch_size=8, include_loss=False):
         '''
@@ -83,7 +92,7 @@ class SAETemplate(torch.nn.Module, ABC):
         print_message=f"Train loss, test loss, l0 sparsity, dead features, entropy after training on {self.num_data_trained_on} datapoints: {train_loss.item():.2f}, {test_loss:.2f}, {l0_sparsity:.1f}, {dead_features:.0f}, {entropy:.2f}"
         tqdm.write(print_message)
         
-    def forward_on_points(self, point_batch:torch.tensor, compute_loss=False):
+    def forward_on_points(self, point_batch:torch.tensor, compute_loss=False) -> torch.tensor:
         embedded_points=embed_point_cloud(point_batch, anchors=self.anchor_points, scale_factor=self.cloud_scale_factor)
         return self.forward(embedded_points, compute_loss=compute_loss)
 
@@ -136,6 +145,11 @@ class SAETemplate(torch.nn.Module, ABC):
         hidden_layer=self.activation_function((residual_stream - self.decoder_bias) @ normalized_encoder + self.encoder_bias)
         reconstructed_residual_stream=hidden_layer @ normalized_decoder + self.decoder_bias
         loss= self.loss_function(residual_stream, hidden_layer, reconstructed_residual_stream) if compute_loss else None
+        if not torch.is_inference_mode_enabled():
+            dead_features_on_this_batch=self.find_dead_features(hidden_layer)
+            self.num_data_since_last_activation=torch.where(dead_features_on_this_batch, 
+                                                            self.num_data_since_last_activation+len(residual_stream),
+                                                              0)
         return loss, residual_stream, hidden_layer, reconstructed_residual_stream
 
     @abstractmethod
@@ -174,18 +188,18 @@ class SAETemplate(torch.nn.Module, ABC):
         decoder_column_norms=self.decoder.norm(dim=1)
         return torch.mean(hidden_layer*decoder_column_norms)
     
-    def ghost_loss(self,residual_streams, hidden_layers, reconstructed_residual_streams):
-        dead_features=self.find_dead_features(hidden_layers)
+    def ghost_loss(self,residual_streams, reconstructed_residual_streams):
+        dead_features=self.num_data_since_last_activation>=1000
         errors=residual_streams-reconstructed_residual_streams
         error_magnitudes=errors.norm(dim=-1)
         error_weighted_residual_stream=((residual_streams*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
         error_weighted_error_direction=((errors*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
-        raw_encoder_ghost_loss=-1*error_weighted_residual_stream@(self.encoder *dead_features)
+        raw_encoder_ghost_loss=-1*error_weighted_residual_stream@(self.encoder[:, torch.where(dead_features>0)[0]])
         # encoder_ghost_loss=torch.nn.functional.relu(raw_encoder_ghost_loss).mean()
-        encoder_ghost_loss=torch.nn.functional.softplus(raw_encoder_ghost_loss).mean()
-        raw_decoder_ghost_loss=-1*error_weighted_error_direction@(self.decoder.T*dead_features)
+        encoder_ghost_loss=torch.nn.functional.softplus(raw_encoder_ghost_loss).sum()
+        raw_decoder_ghost_loss=-1*error_weighted_error_direction@(self.decoder[torch.where(dead_features>0)[0]]).T
         # decoder_ghost_loss=torch.nn.functional.relu(raw_decoder_ghost_loss).mean()
-        decoder_ghost_loss=torch.nn.functional.softplus(raw_decoder_ghost_loss).mean()
+        decoder_ghost_loss=torch.nn.functional.softplus(raw_decoder_ghost_loss).sum()
         # decoder_ghost_loss=0
         ghost_loss=(encoder_ghost_loss+decoder_ghost_loss)
         return ghost_loss
@@ -219,10 +233,14 @@ class SAETemplate(torch.nn.Module, ABC):
 class SAEAnthropic(SAETemplate):
 
     def __init__(self, anchor_points:torch.tensor, num_features:int, l1_sparsity_coefficient:float, ghost_loss_coefficient:float=.1, decoder_initialization_scale=0.1, cloud_scale_factor=1, ghost_loss_style="new"):
-        super().__init__(anchor_points=anchor_points, num_features=num_features, decoder_initialization_scale=decoder_initialization_scale, cloud_scale_factor=cloud_scale_factor, ghost_loss_style=ghost_loss_style)
-        self.l1_sparsity_coefficient=l1_sparsity_coefficient
-        self.ghost_loss_coefficient=ghost_loss_coefficient
-
+        super().__init__(anchor_points=anchor_points, 
+                         num_features=num_features, 
+                         decoder_initialization_scale=decoder_initialization_scale, 
+                         cloud_scale_factor=cloud_scale_factor, 
+                         ghost_loss_style=ghost_loss_style,
+                         l1_sparsity_coefficient=l1_sparsity_coefficient,
+                         ghost_loss_coefficient=ghost_loss_coefficient
+                         )
     # def forward(self, embedded_points, compute_loss=False):
     #     hidden_layer=self.activation_function(embedded_points @ self.encoder + self.encoder_bias)
     #     reconstructed_embedded_points=hidden_layer @ self.decoder + self.decoder_bias
@@ -237,7 +255,7 @@ class SAEAnthropic(SAETemplate):
         reconstruction_loss=self.reconstruction_error(residual_stream, reconstructed_residual_stream)
         sparsity_loss= self.sparsity_loss_function(hidden_layer)*self.l1_sparsity_coefficient
         if self.ghost_loss_style=="new":
-            ghost_loss=self.ghost_loss(residual_stream, hidden_layer, reconstructed_residual_stream)*self.ghost_loss_coefficient
+            ghost_loss=self.ghost_loss(residual_stream, reconstructed_residual_stream)*self.ghost_loss_coefficient
         elif self.ghost_loss_style=="anthropic":
             ghost_loss=self.ghost_loss_anthropic(residual_stream, hidden_layer, reconstructed_residual_stream)
         total_loss=reconstruction_loss+sparsity_loss+ghost_loss
@@ -253,11 +271,15 @@ class SAEAnthropic(SAETemplate):
 
 class TopkSAE(SAETemplate):
     def __init__(self, anchor_points:torch.tensor, num_features: int, k:int, ghost_loss_coefficient:float=.1, decoder_initialization_scale=0.1, use_relu=True, l1_sparsity_coefficient=0, cloud_scale_factor=1, ghost_loss_style="new"):
-        super().__init__(anchor_points=anchor_points, num_features=num_features, decoder_initialization_scale=decoder_initialization_scale, cloud_scale_factor=cloud_scale_factor, ghost_loss_style=ghost_loss_style)
+        super().__init__(anchor_points=anchor_points, 
+                         num_features=num_features, 
+                         decoder_initialization_scale=decoder_initialization_scale, 
+                         cloud_scale_factor=cloud_scale_factor, 
+                         ghost_loss_style=ghost_loss_style,
+                         ghost_loss_coefficient=ghost_loss_coefficient,
+                         l1_sparsity_coefficient=l1_sparsity_coefficient)
         self.k=k
         self.use_relu=use_relu
-        self.l1_sparsity_coefficient=l1_sparsity_coefficient
-        self.ghost_loss_coefficient=ghost_loss_coefficient
 
     def activation_function(self, encoder_output):
         if self.use_relu:
@@ -293,7 +315,7 @@ class TopkSAE(SAETemplate):
         reconstruction_loss=self.reconstruction_error(residual_stream, reconstructed_residual_stream)
         sparsity_loss= self.sparsity_loss_function(hidden_layer)*self.l1_sparsity_coefficient
         if self.ghost_loss_style=="new":
-            ghost_loss=self.ghost_loss(residual_stream, hidden_layer, reconstructed_residual_stream)*self.ghost_loss_coefficient
+            ghost_loss=self.ghost_loss(residual_stream, reconstructed_residual_stream)*self.ghost_loss_coefficient
         elif self.ghost_loss_style=="anthropic":
             ghost_loss=self.ghost_loss_anthropic(residual_stream, hidden_layer, reconstructed_residual_stream)
         total_loss=reconstruction_loss+sparsity_loss+ghost_loss
