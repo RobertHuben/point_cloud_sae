@@ -143,7 +143,7 @@ def create_random_blobs_dataset(num_points, num_blobs, blobs_seed=0, points_seed
         if torch.all(squared_distance_to_previous_centers>distance_cutoff**2):
             centers=torch.concat([centers,prospective_center], dim=0)
 
-    pre_covariances= 3*(torch.rand((num_blobs, 2, 2))-.5)
+    pre_covariances= 4*(torch.rand((num_blobs, 2, 2))-.5)
     covariances=pre_covariances.transpose(1,2)@pre_covariances+.5*torch.eye(2)
 
     if class_weights==None:
@@ -181,9 +181,7 @@ def create_point_cloud_rectangle(num_points, dims):
     points=(torch.rand((num_points, 2))*stretch_factors)+shifts
     return points
 
-
 def generate_datasets_for_saes(mode:str, num_anchors:int, train_size:int, test_size:int, num_classes:int, class_weights=None, class_weights_seed=0, points_seeds=[1,2,3], other_random_seed=10):
-
     if class_weights_seed:
         class_weights_seed=1
         random.seed(class_weights_seed)
@@ -209,3 +207,20 @@ def generate_datasets_for_saes(mode:str, num_anchors:int, train_size:int, test_s
         train_dataset=create_random_blobs_dataset(train_size, num_blobs=num_classes, blobs_seed=other_random_seed, points_seed=points_seeds[1], class_weights=class_weights)
         test_dataset=create_random_blobs_dataset(test_size, num_blobs=num_classes, blobs_seed=other_random_seed, points_seed=points_seeds[2], class_weights=class_weights)
     return anchors, train_dataset, test_dataset
+
+
+def graph_all_types():
+    modes_with_specs={'basic_blobs':5, 'blob_grid':18, 'random_blobs':10,'lollipops':5, }
+    for n, mode in enumerate(modes_with_specs):
+        ax=plt.subplot(2,2,n+1)
+        num_classes=modes_with_specs[mode]
+        _, point_cloud, __=generate_datasets_for_saes(mode, 1, 1000, 1, num_classes, class_weights_seed=None, points_seeds=[0,1,0])
+        point_cloud.plot_as_scatter(save_name="true_clusters_plot")
+        ax.get_legend().remove()
+        plt.title(mode)
+    plt.suptitle("Datasets used, with true clusters shown")
+    plt.tight_layout()
+    plt.savefig("analysis_results/true_clusters_plot.png")
+
+if __name__=="__main__":
+    graph_all_types()
