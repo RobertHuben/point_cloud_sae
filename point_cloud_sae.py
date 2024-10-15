@@ -145,21 +145,24 @@ class SAETemplate(torch.nn.Module, ABC):
         '''
         for anything additional that needs to be done after each training step
         '''
-        losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(train_dataset, include_loss=True)
-        dead_features=self.find_dead_features(hidden_layers)
-        if torch.any(dead_features):
-            self.do_ghost_grads(dead_features, residual_streams, reconstructed_residual_streams)
+        pass
 
-    def do_ghost_grads(self,dead_features,residual_streams, reconstructed_residual_streams):
-        learning_rate=1e-4
+    def sparsity_loss_function(self, hidden_layer):
+        decoder_column_norms=self.decoder.norm(dim=1)
+        return torch.mean(hidden_layer*decoder_column_norms)
+    
+    def ghost_loss(self,residual_streams, hidden_layers, reconstructed_residual_streams):
+        dead_features=self.find_dead_features(hidden_layers)
         errors=residual_streams-reconstructed_residual_streams
         error_magnitudes=errors.norm(dim=-1)**2
-        mean_error_magnitude=error_magnitudes.mean()
         error_weighted_residual_stream=((residual_streams*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
         error_weighted_error_direction=((errors*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
-        with torch.no_grad():
-            self.encoder[:,dead_features]+=mean_error_magnitude*learning_rate*error_weighted_residual_stream.unsqueeze(1)
-            self.decoder[dead_features,:]+=mean_error_magnitude*learning_rate*error_weighted_error_direction.unsqueeze(0)
+        raw_encoder_ghost_loss=-1*error_weighted_residual_stream@(self.encoder *dead_features)
+        encoder_ghost_loss=torch.nn.functional.softplus(raw_encoder_ghost_loss).mean()
+        raw_decoder_ghost_loss=-1*error_weighted_error_direction@(self.decoder.T*dead_features)
+        decoder_ghost_loss=torch.nn.functional.softplus(raw_decoder_ghost_loss).mean()
+        ghost_loss=(encoder_ghost_loss+decoder_ghost_loss)
+        return ghost_loss
 
     def reconstruction_error(self, residual_stream, reconstructed_residual_stream):
         reconstruction_l2=torch.norm(reconstructed_residual_stream-residual_stream, dim=-1)
@@ -176,9 +179,10 @@ class SAETemplate(torch.nn.Module, ABC):
 
 class SAEAnthropic(SAETemplate):
 
-    def __init__(self, anchor_points:torch.tensor, num_features:int, l1_sparsity_coefficient:float, decoder_initialization_scale=0.1, cloud_scale_factor=1):
+    def __init__(self, anchor_points:torch.tensor, num_features:int, l1_sparsity_coefficient:float, ghost_loss_coefficient:float=.1, decoder_initialization_scale=0.1, cloud_scale_factor=1):
         super().__init__(anchor_points=anchor_points, num_features=num_features, decoder_initialization_scale=decoder_initialization_scale, cloud_scale_factor=cloud_scale_factor)
         self.l1_sparsity_coefficient=l1_sparsity_coefficient
+        self.ghost_loss_coefficient=ghost_loss_coefficient
 
     def forward(self, embedded_points, compute_loss=False):
         hidden_layer=self.activation_function(embedded_points @ self.encoder + self.encoder_bias)
@@ -192,30 +196,26 @@ class SAEAnthropic(SAETemplate):
     def loss_function(self, residual_stream, hidden_layer, reconstructed_residual_stream):
         reconstruction_loss=self.reconstruction_error(residual_stream, reconstructed_residual_stream)
         sparsity_loss= self.sparsity_loss_function(hidden_layer)*self.l1_sparsity_coefficient
+        ghost_loss=self.ghost_loss(residual_stream, hidden_layer, reconstructed_residual_stream)*self.ghost_loss_coefficient
+
         total_loss=reconstruction_loss+sparsity_loss
         return total_loss
 
     def activation_function(self, encoder_output):
         return F.relu(encoder_output)
 
-    def sparsity_loss_function(self, hidden_layer):
-        decoder_column_norms=self.decoder.norm(dim=1)
-        return torch.mean(hidden_layer*decoder_column_norms)
-    
     def report_model_specific_features(self):
         return [f"Sparsity loss coefficient: {self.l1_sparsity_coefficient}"]
 
 
 
-#suppression_mode can be "relative" or "absolute"
-class LeakyTopkSAE(SAETemplate):
-    def __init__(self, anchor_points:torch.tensor, num_features: int, leakiness: float, k:int, suppression_mode="relative", decoder_initialization_scale=0.1, use_relu=True, l1_sparsity_coefficient=0, cloud_scale_factor=1):
+class TopkSAE(SAETemplate):
+    def __init__(self, anchor_points:torch.tensor, num_features: int, k:int, ghost_loss_coefficient:float=.1, decoder_initialization_scale=0.1, use_relu=True, l1_sparsity_coefficient=0, cloud_scale_factor=1):
         super().__init__(anchor_points=anchor_points, num_features=num_features, decoder_initialization_scale=decoder_initialization_scale, cloud_scale_factor=cloud_scale_factor)
-        self.leakiness = leakiness
         self.k=k
-        self.suppression_mode = suppression_mode
         self.use_relu=use_relu
         self.l1_sparsity_coefficient=l1_sparsity_coefficient
+        self.ghost_loss_coefficient=ghost_loss_coefficient
 
 
     def activation_function(self, encoder_output):
@@ -223,9 +223,10 @@ class LeakyTopkSAE(SAETemplate):
             activations = torch.relu(encoder_output)
         else:
             activations=encoder_output
-        kth_value = torch.topk(activations, k=self.k).values.min(dim=-1).values
-        return suppress_lower_activations(activations, kth_value, leakiness=self.leakiness, mode=self.suppression_mode)
-    
+        highest_indices=activations.argmax(dim=1)
+        activations_mask=torch.zeros(activations.shape).scatter_(dim=1,index=highest_indices.unsqueeze(1), value=1)
+        return activations*activations_mask
+
     def forward(self, residual_stream, compute_loss=False):
         '''
         takes the trimmed residual stream of a language model (as produced by run_gpt_and_trim) and runs the SAE
@@ -240,7 +241,7 @@ class LeakyTopkSAE(SAETemplate):
         normalized_decoder = F.normalize(self.decoder, p=2, dim=1) #normalize columns
         hidden_layer=self.activation_function((residual_stream - self.decoder_bias) @ normalized_encoder + self.encoder_bias)
         reconstructed_residual_stream=hidden_layer @ normalized_decoder + self.decoder_bias
-        loss= self.reconstruction_error(residual_stream, reconstructed_residual_stream) if compute_loss else None
+        loss= self.loss_function(residual_stream, hidden_layer, reconstructed_residual_stream) if compute_loss else None
         return loss, residual_stream, hidden_layer, reconstructed_residual_stream
 
     def report_model_specific_features(self):
@@ -249,7 +250,8 @@ class LeakyTopkSAE(SAETemplate):
     def loss_function(self, residual_stream, hidden_layer, reconstructed_residual_stream):
         reconstruction_loss=self.reconstruction_error(residual_stream, reconstructed_residual_stream)
         sparsity_loss= self.sparsity_loss_function(residual_stream)*self.l1_sparsity_coefficient
-        total_loss=reconstruction_loss+sparsity_loss
+        ghost_loss=self.ghost_loss(residual_stream, hidden_layer, reconstructed_residual_stream)*self.ghost_loss_coefficient
+        total_loss=reconstruction_loss+sparsity_loss+ghost_loss
         return total_loss
 
     def sparsity_loss_function(self, residual_stream):
@@ -259,29 +261,4 @@ class LeakyTopkSAE(SAETemplate):
         decoder_column_norms=self.decoder.norm(dim=1)
         return torch.mean(pre_activation_hidden_layer*decoder_column_norms)
 
-class TopkSAE(LeakyTopkSAE):
-    def __init__(self, anchor_points:torch.tensor, num_features:int, k:int, decoder_initialization_scale=0.1, use_relu=True, l1_sparsity_coefficient=0, cloud_scale_factor=1):
-        super().__init__(anchor_points=anchor_points, 
-                        num_features=num_features, 
-                        leakiness=0, 
-                        k=k, 
-                        suppression_mode="relative", 
-                        decoder_initialization_scale=decoder_initialization_scale, 
-                        use_relu=use_relu, 
-                        l1_sparsity_coefficient=l1_sparsity_coefficient,
-                        cloud_scale_factor=cloud_scale_factor)
-
-
-def suppress_lower_activations(t, bound, leakiness, inclusive=True, mode="absolute"):
-    if torch.is_tensor(bound) and bound.numel() != 1:
-        while bound.dim() < t.dim():
-            bound = torch.unsqueeze(bound, -1)
-    above_mask = (torch.abs(t) >= bound) if inclusive else (torch.abs(t) > bound)
-    above_only = t * above_mask
-    below_only = t * (~above_mask)
-    if mode == "absolute":
-        bad_bound_mask = bound <= 0 #to make sure we don't divide by 0
-        return above_only + (~bad_bound_mask)*leakiness/(bound+bad_bound_mask) * below_only
-    elif mode == "relative":
-        return above_only + leakiness * below_only
 
