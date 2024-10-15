@@ -1,13 +1,10 @@
-import os
 import torch
-import matplotlib.pyplot as plt
 from abc import ABC, abstractmethod
 from tqdm import tqdm
-from math import sqrt, ceil
 from torch.nn import functional as F
 
 from point_cloud_datasets import PointCloudDataset
-from utils import embed_point_cloud, entropy_from_counts
+from utils import embed_point_cloud
 
 device='cuda' if torch.cuda.is_available() else 'cpu'
 
