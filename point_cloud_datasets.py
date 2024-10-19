@@ -17,7 +17,7 @@ class PointCloudDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         return self.points[index]
 
-    def plot_as_scatter(self, labels=None, save_name=None):
+    def plot_as_scatter(self, labels=None, save_name=None, show=False, close_at_end=True):
         if labels==None:
             labels=self.true_classes
             label_term="True Class"
@@ -29,10 +29,12 @@ class PointCloudDataset(torch.utils.data.Dataset):
             plt.scatter(x,y, label=f"{label_term} {class_num}")
         plt.title("Points in the dataset, separated by class")
         plt.legend()
-        if save_name==None:
+        if show:
             plt.show()
-        else:
+        if save_name:
             plt.savefig(f"analysis_results/{save_name}.png")
+        if close_at_end:
+            plt.close()
 
     def compute_entropy_of_clustering(self, cluster_assignments):
         '''
@@ -110,7 +112,7 @@ def create_lollipops_dataset(num_points, seed=0, class_weights=None):
     if seed:
         torch.random.manual_seed(seed)
     centers=torch.tensor([[0,0], [5,0], [0,10]], dtype=torch.float32)
-    rectangle_shapes=torch.tensor([[-.2, .2, -10,0],[5, 15, 0.2,-0.2]])
+    rectangle_shapes=torch.tensor([[-.2, .2, -10,-2],[7, 15, 0.2,-0.2]])
     if class_weights==None:
         class_weights=[1 for _ in range(len(centers)+len(rectangle_shapes))]
     total_class_weights=sum(class_weights)
