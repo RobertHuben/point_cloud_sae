@@ -17,7 +17,9 @@ def embed_point_cloud(points:torch.tensor, anchors:torch.tensor, eps=1e-5, scale
     '''
     squared_distances=compute_pairwise_squared_distances(points, anchors)
     variance=torch.std(anchors, dim=0).norm()**2
-    return torch.exp(-1*scale_factor*squared_distances/(variance+eps))
+    k=-1/(2*(variance+eps)*scale_factor**2)
+    return torch.exp(k*squared_distances)
+    # return torch.exp(-1*scale_factor*squared_distances/(variance+eps))
 
 def entropy_from_counts(counts):
     total_items=sum(counts)
