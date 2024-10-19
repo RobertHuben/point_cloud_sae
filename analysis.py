@@ -2,6 +2,7 @@ import torch
 import matplotlib.pyplot as plt
 import os
 from point_cloud_sae import SAETemplate, SAEAnthropic, TopkSAE
+from point_cloud_datasets import PointCloudDataset
 
 from math import ceil, sqrt
 
@@ -36,10 +37,10 @@ def graph_reconstruction_errors(eval_dataset, file_location="trained_saes/point_
     sae=torch.load(file_location)
     x=eval_dataset.points[:,0].detach().numpy()
     y=eval_dataset.points[:,1].detach().numpy()
-    residual_streams, hidden_layers, reconstructed_residual_streams=sae.catenate_outputs_on_dataset(eval_dataset, include_loss=False)
-    errors=(reconstructed_residual_streams-residual_streams).norm(dim=1)
-    errors=errors.detach().numpy()
-    point_cloud_scatter=plt.scatter(x,y, c=errors, label="Point errors")
+    losses, residual_streams, hidden_layers, reconstructed_residual_streams=sae.catenate_outputs_on_dataset(eval_dataset, include_loss=True)
+    reconstruction_errors=torch.norm(reconstructed_residual_streams-residual_streams, dim=-1)
+    reconstruction_errors=reconstruction_errors.detach().numpy()
+    point_cloud_scatter=plt.scatter(x,y, c=reconstruction_errors, label="Point errors")
     plt.title(f"Reconstruction Errors")
     plt.colorbar(point_cloud_scatter)
     save_file_name=f"{save_directory}/reconstruction_errors.png"
@@ -105,3 +106,18 @@ def graph_point_cloud_results(eval_dataset, anchors=None, anchor_details='encode
         plt.tight_layout()
         plt.savefig(save_file_name)
         plt.close()
+
+def create_before_after_plot(sae:SAETemplate, dataset:PointCloudDataset):
+    plt.rcParams["figure.figsize"] = (8,4)
+    plt.subplot(1,2,1)
+    dataset.plot_as_scatter(labels=torch.zeros(len(dataset)), close_at_end=False)
+    plt.title("Input")
+    plt.legend('').remove()
+    plt.subplot(1,2,2)
+    dataset.plot_as_scatter(labels=sae.classify(dataset), close_at_end=False)
+    plt.legend('').remove()
+    plt.title("Clusters found by SAE")
+    plt.tight_layout()
+    plt.savefig("analysis_results/before_after.png")
+    plt.close()
+    
