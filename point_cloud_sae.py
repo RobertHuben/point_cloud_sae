@@ -101,7 +101,7 @@ class SAETemplate(torch.nn.Module, ABC):
             torch.manual_seed(fixed_seed)
         self.to(device)
         self.train()
-        optimizer=torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=1e-1)
+        optimizer=torch.optim.AdamW(self.parameters(), lr=learning_rate, weight_decay=0)
         step=0
         report_on_batch_number=report_every_n_data//batch_size
 
@@ -185,17 +185,16 @@ class SAETemplate(torch.nn.Module, ABC):
         decoder_column_norms=self.decoder.norm(dim=1)
         return torch.mean(hidden_layer*decoder_column_norms)
     
-    def ghost_loss(self,residual_streams, reconstructed_residual_streams):
+    def ghost_loss(self, residual_streams, reconstructed_residual_streams):
         dead_features=self.num_data_since_last_activation>=1000
         errors=residual_streams-reconstructed_residual_streams
-        error_magnitudes=errors.norm(dim=-1)
+        error_magnitudes=errors.norm(dim=-1)**2
+        # error_magnitudes=errors.norm(dim=-1)
         error_weighted_residual_stream=((residual_streams*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
         error_weighted_error_direction=((errors*error_magnitudes.unsqueeze(1)).sum(dim=0))/error_magnitudes.sum()
         raw_encoder_ghost_loss=-1*error_weighted_residual_stream@(self.encoder[:, torch.where(dead_features>0)[0]])
-        # encoder_ghost_loss=torch.nn.functional.relu(raw_encoder_ghost_loss).mean()
         encoder_ghost_loss=torch.nn.functional.softplus(raw_encoder_ghost_loss).sum()
         raw_decoder_ghost_loss=-1*error_weighted_error_direction@(self.decoder[torch.where(dead_features>0)[0]]).T
-        # decoder_ghost_loss=torch.nn.functional.relu(raw_decoder_ghost_loss).mean()
         decoder_ghost_loss=torch.nn.functional.softplus(raw_decoder_ghost_loss).sum()
         # decoder_ghost_loss=0
         ghost_loss=(encoder_ghost_loss+decoder_ghost_loss)
