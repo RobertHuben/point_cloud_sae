@@ -24,9 +24,15 @@ class PointCloudDataset(torch.utils.data.Dataset):
         else:
             label_term="Cluster"
         label_set=sorted(list(set(int(x) for x in labels)))
-        for class_num in label_set:
-            x,y=self[torch.where(labels==class_num)].T
-            plt.scatter(x,y, label=f"{label_term} {class_num}")
+        if max(label_set)>10:
+            colors = plt.cm.tab20(torch.linspace(0, 1, 20))
+            for class_num in label_set:
+                x,y=self[torch.where(labels==class_num)].T
+                plt.scatter(x,y, label=f"{label_term} {class_num}", color=colors[class_num])
+        else:
+            for class_num in label_set:
+                x,y=self[torch.where(labels==class_num)].T
+                plt.scatter(x,y, label=f"{label_term} {class_num}")
         plt.title("Points in the dataset, separated by class")
         plt.legend()
         if show:
@@ -183,9 +189,8 @@ def create_point_cloud_rectangle(num_points, dims):
     points=(torch.rand((num_points, 2))*stretch_factors)+shifts
     return points
 
-def generate_datasets_for_saes(mode:str, num_anchors:int, train_size:int, test_size:int, num_classes:int, class_weights=None, class_weights_seed=0, points_seeds=[1,2,3], other_random_seed=10):
-    if class_weights_seed:
-        class_weights_seed=1
+def generate_datasets_for_saes(mode:str, num_anchors:int, train_size:int, test_size:int, num_classes:int, class_weights=None, class_weights_seed=-1, points_seeds=[1,2,3], other_random_seed=10):
+    if class_weights_seed>=0:
         random.seed(class_weights_seed)
         class_weights=[random.choice([1,2,3,4]) for _ in range(num_classes)]
         print(f"Randomized class weights are: {class_weights}")
