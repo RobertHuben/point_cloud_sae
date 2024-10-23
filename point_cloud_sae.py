@@ -80,20 +80,23 @@ class SAETemplate(torch.nn.Module, ABC):
         return eval_dataset.compute_entropy_of_clustering(cluster_assignments)
 
     @torch.inference_mode()
-    def print_evaluation(self, train_loss, eval_dataset:PointCloudDataset, step_number="N/A"):
+    def report_evaluation(self, train_loss, eval_dataset:PointCloudDataset, step_number="N/A", write_location=None):
         losses, residual_streams, hidden_layers, reconstructed_residual_streams=self.catenate_outputs_on_dataset(eval_dataset, include_loss=True)
         test_loss=losses.mean()
         l0_sparsity=self.compute_l0_sparsity(hidden_layers)
         dead_features=self.count_dead_features(hidden_layers)
         entropy=self.compute_classification_entropy(hidden_layers, eval_dataset)
-        print_message=f"Train loss, test loss, l0 sparsity, dead features, entropy after training on {self.num_data_trained_on} datapoints: {train_loss.item():.2f}, {test_loss:.2f}, {l0_sparsity:.1f}, {dead_features:.0f}, {entropy:.2f}"
-        tqdm.write(print_message)
+        if write_location:
+            write_location.update(self, train_loss, test_loss, dead_features, entropy)
+        else:
+            print_message=f"Train loss, test loss, l0 sparsity, dead features, entropy after training on {self.num_data_trained_on} datapoints: {train_loss.item():.2f}, {test_loss:.2f}, {l0_sparsity:.1f}, {dead_features:.0f}, {entropy:.2f}"
+            tqdm.write(print_message)
         
     def forward_on_points(self, point_batch:torch.tensor, compute_loss=False) -> torch.tensor:
         embedded_points=embed_point_cloud(point_batch, anchors=self.anchor_points, scale_factor=self.cloud_scale_factor)
         return self.forward(embedded_points, compute_loss=compute_loss)
 
-    def train_sae(self, train_dataset:PointCloudDataset, eval_dataset:PointCloudDataset, batch_size=64, num_epochs=1, report_every_n_data=500, learning_rate=1e-3, fixed_seed=1337):
+    def train_sae(self, train_dataset:PointCloudDataset, eval_dataset:PointCloudDataset, batch_size=64, num_epochs=1, report_every_n_data=500, learning_rate=1e-3, fixed_seed=1337, write_location=None):
         '''
         performs a training loop on self, with printed evaluations
         '''
@@ -122,10 +125,10 @@ class SAETemplate(torch.nn.Module, ABC):
                 optimizer.step()
 
                 if step % report_on_batch_number==0:
-                    self.print_evaluation(loss, eval_dataset, step_number=step)
+                    self.report_evaluation(loss, eval_dataset, step_number=step, write_location=write_location)
                 self.after_step_update(train_dataset)
         else:
-            self.print_evaluation(train_loss=loss, eval_dataset=eval_dataset, step_number="Omega")
+            self.report_evaluation(train_loss=loss, eval_dataset=eval_dataset, step_number="Omega", write_location=write_location)
         self.eval()
 
     def forward(self, residual_stream, compute_loss=False):
@@ -317,3 +320,26 @@ class TopkSAE(SAETemplate):
         total_loss=reconstruction_loss+sparsity_loss+ghost_loss
         return total_loss
 
+class TrainingLog:
+
+    def __init__(self):
+        self.num_data_seen=[]
+        self.train_losses=[]
+        self.test_losses=[]
+        self.dead_feature_counts=[]
+        self.entropies=[]
+
+    def update(self, sae:SAETemplate, train_loss, test_loss, dead_features, entropy):
+        self.num_data_seen.append(sae.num_data_trained_on)
+        self.train_losses.append(train_loss)
+        self.test_losses.append(test_loss)
+        self.dead_feature_counts.append(dead_features)
+        self.entropies.append(entropy)
+
+    def export_to_tensors(self):
+        num_data_seen=torch.tensor(self.num_data_seen)
+        train_losses=torch.tensor(self.train_losses)
+        test_losses=torch.tensor(self.test_losses)
+        dead_feature_counts=torch.tensor(self.dead_feature_counts)
+        entropies=torch.tensor(self.entropies)
+        return num_data_seen, train_losses, test_losses, dead_feature_counts, entropies
