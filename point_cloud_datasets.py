@@ -216,18 +216,4 @@ def generate_datasets_for_saes(mode:str, num_anchors:int, train_size:int, test_s
     return anchors, train_dataset, test_dataset
 
 
-def graph_all_types():
-    modes_with_specs={'basic_blobs':5, 'blob_grid':18, 'random_blobs':10,'lollipops':5, }
-    for n, mode in enumerate(modes_with_specs):
-        ax=plt.subplot(2,2,n+1)
-        num_classes=modes_with_specs[mode]
-        _, point_cloud, __=generate_datasets_for_saes(mode, 1, 1000, 1, num_classes, class_weights_seed=None, points_seeds=[0,1,0])
-        point_cloud.plot_as_scatter(save_name="true_clusters_plot")
-        ax.get_legend().remove()
-        plt.title(mode)
-    plt.suptitle("Datasets used, with true clusters shown")
-    plt.tight_layout()
-    plt.savefig("analysis_results/true_clusters_plot.png")
 
-if __name__=="__main__":
-    graph_all_types()
