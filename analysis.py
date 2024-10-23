@@ -108,7 +108,7 @@ def graph_point_cloud_results(eval_dataset, anchors=None, anchor_details='encode
         plt.close()
 
 def create_before_after_plot(sae:SAETemplate, dataset:PointCloudDataset):
-    plt.rcParams["figure.figsize"] = (8,4)
+    plt.figure(figsize=(8,5))
     plt.subplot(1,2,1)
     dataset.plot_as_scatter(labels=torch.zeros(len(dataset)), close_at_end=False)
     plt.title("Input")
@@ -121,3 +121,45 @@ def create_before_after_plot(sae:SAETemplate, dataset:PointCloudDataset):
     plt.savefig("analysis_results/before_after.png")
     plt.close()
     
+
+def plot_training_run(num_data_seen, losses, entropy, num_dead_features):
+    plt.plot(num_data_seen, losses, label="Loss")
+    plt.plot(num_data_seen, entropy, label="Entropy")
+    plt.plot(num_data_seen, num_dead_features, label="Number of Dead Features")
+    plt.legend()
+    plt.title("Training Run")
+    plt.xlabel("Training Step")
+    plt.tight_layout()
+    plt.savefig("analysis_results/training_run.png")
+    plt.close()
+
+def plot_many_training_runs(training_logs, title=None, save_name_suffix=None, save=True, num_suplots=2, close_at_end=True):
+    for idx, log in enumerate(training_logs):
+        num_data_seen, train_losses, test_losses, dead_feature_counts, entropies=log.export_to_tensors()
+        plt.subplot(1,num_suplots,1)
+        plt.plot(num_data_seen, test_losses, label=f"Seed {idx}")
+        plt.subplot(1,num_suplots,2)
+        plt.plot(num_data_seen, entropies, label=f"Seed {idx}")
+    
+    plt.subplot(1,num_suplots,1)
+    plt.title("Test Losses")
+    plt.xticks(rotation = 45)
+    plt.xlabel("Training Step")
+    plt.legend()
+    plt.subplot(1,num_suplots,2)
+    plt.plot([0, int(max(num_data_seen))], [0.1,0.1], linestyle='dashed', c='black')
+    plt.title("Entropies")
+    plt.xlabel("Training Step")
+    plt.xticks(rotation = 30)
+    # plt.legend()
+    if title:
+        plt.suptitle(title)
+    if save_name_suffix:
+        save_name=f"many_training_runs_{save_name_suffix}"
+    else:
+        save_name="many_training_runs"
+    plt.tight_layout()
+    if save:
+        plt.savefig(f"analysis_results/{save_name}.png")
+    if close_at_end:
+        plt.close()
