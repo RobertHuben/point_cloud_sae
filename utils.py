@@ -16,7 +16,10 @@ def embed_point_cloud(points:torch.tensor, anchors:torch.tensor, eps=1e-5, scale
     and variance is the variance of all such distances
     '''
     squared_distances=compute_pairwise_squared_distances(points, anchors)
-    variance=torch.std(anchors, dim=0).norm()**2
+    if len(anchors)>1:
+        variance=torch.std(anchors, dim=0).norm()**2
+    else:
+        variance=1
     k=-1/(2*(variance+eps)*scale_factor**2)
     return torch.exp(k*squared_distances)
     # return torch.exp(-1*scale_factor*squared_distances/(variance+eps))
