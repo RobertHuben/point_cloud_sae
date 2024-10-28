@@ -107,6 +107,36 @@ def graph_point_cloud_results(eval_dataset, anchors=None, anchor_details='encode
         plt.savefig(save_file_name)
         plt.close()
 
+def graph_point_cloud_results_encoder_decoder(eval_dataset, anchors, file_location="trained_saes/point_cloud_sae.pkl", activation_cutoff=1e-1):
+    '''
+    by detail level:
+    0 - just the points
+    1 - points with feature activations
+    2 - also anchor locations
+    3 - also anchor directions
+    '''
+    sae=torch.load(file_location)
+    save_directory="analysis_results"
+    if not os.path.exists(save_directory):
+        os.makedirs(save_directory)
+    for feature_number in range(sae.num_features):
+        plt.figure(figsize=(10,4))
+        ax=plt.subplot(1,2,1)
+        point_cloud_scatter, anchors_scatter=graph_one_feature(sae, feature_number, eval_dataset, axes=ax, anchors=anchors, detail_level=3, activation_cutoff=activation_cutoff, anchor_details='encoder')
+        plt.title("Activations with encoder weights shown")
+        ax=plt.subplot(1,2,2)
+        plt.colorbar(anchors_scatter)
+        point_cloud_scatter, anchors_scatter=graph_one_feature(sae, feature_number, eval_dataset, axes=ax, anchors=anchors, detail_level=3, activation_cutoff=activation_cutoff, anchor_details='decoder')
+        plt.title("Activations with decoder weights shown")
+        plt.colorbar(anchors_scatter)
+        plt.colorbar(point_cloud_scatter)
+        plt.legend()
+        save_file_name=f"{save_directory}/enc_dec_feature_{feature_number}.png"
+        plt.suptitle(f"Activations of feature {feature_number}")
+        plt.tight_layout()
+        plt.savefig(save_file_name)
+        plt.close()
+
 def create_before_after_plot(sae:SAETemplate, dataset:PointCloudDataset):
     plt.figure(figsize=(8,5))
     plt.subplot(1,2,1)
@@ -133,13 +163,18 @@ def plot_training_run(num_data_seen, losses, entropy, num_dead_features):
     plt.savefig("analysis_results/training_run.png")
     plt.close()
 
-def plot_many_training_runs(training_logs, title=None, save_name_suffix=None, save=True, num_suplots=2, close_at_end=True):
+def plot_many_training_runs(training_logs, title=None, save_name_suffix=None, save=True, num_suplots=2, close_at_end=True, use_adjoint_entropies=False):
     for idx, log in enumerate(training_logs):
-        num_data_seen, train_losses, test_losses, dead_feature_counts, entropies=log.export_to_tensors()
+        num_data_seen, train_losses, test_losses, dead_feature_counts, entropies, adjoint_entropies=log.export_to_tensors()
         plt.subplot(1,num_suplots,1)
         plt.plot(num_data_seen, test_losses, label=f"Seed {idx}")
         plt.subplot(1,num_suplots,2)
-        plt.plot(num_data_seen, entropies, label=f"Seed {idx}")
+        if use_adjoint_entropies:
+            title="Adjoint Entropies"
+            plt.plot(num_data_seen, adjoint_entropies, label=f"Seed {idx}")
+        else:
+            title="Entropies"
+            plt.plot(num_data_seen, entropies, label=f"Seed {idx}")
     
     plt.subplot(1,num_suplots,1)
     plt.title("Test Losses")
@@ -148,7 +183,7 @@ def plot_many_training_runs(training_logs, title=None, save_name_suffix=None, sa
     plt.legend()
     plt.subplot(1,num_suplots,2)
     plt.plot([0, int(max(num_data_seen))], [0.1,0.1], linestyle='dashed', c='black')
-    plt.title("Entropies")
+    plt.title(title)
     plt.xlabel("Training Step")
     plt.xticks(rotation = 30)
     # plt.legend()
